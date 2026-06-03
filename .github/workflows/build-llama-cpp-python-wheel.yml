@@ -41,8 +41,11 @@ jobs:
       run: |
         pip wheel llama-cpp-python --wheel-dir=dist --no-deps
 
-    - name: Upload Wheel Artifact
-      uses: actions/upload-artifact@v4
+    - name: Create GitHub Release and Upload Wheel
+      uses: softprops/action-gh-release@v2
       with:
-        name: llama-cpp-python-cuda12.8-wheel
-        path: dist/*.whl
+        tag_name: v1.0.${{ github.run_number }} # 每次编译自动生成一个版本号
+        name: Release CUDA Wheel v1.0.${{ github.run_number }}
+        files: dist/*.whl
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # GitHub 自动提供的权限，无需配置
