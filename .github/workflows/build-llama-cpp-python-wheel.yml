@@ -5,7 +5,8 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # 🟢 核心修复：强行指定 Ubuntu 22.04，以匹配 Colab 的 GLIBC 2.35 底座
+    runs-on: ubuntu-22.04
 
     steps:
     - name: Checkout Code
