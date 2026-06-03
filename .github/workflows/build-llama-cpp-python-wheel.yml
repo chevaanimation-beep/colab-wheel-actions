@@ -1,7 +1,7 @@
 name: Build llama-cpp-python CUDA Wheel
 
 on:
-  workflow_dispatch: # 允许你在 GitHub 页面上点击按钮手动触发编译
+  workflow_dispatch:
 
 jobs:
   build:
@@ -14,16 +14,15 @@ jobs:
     - name: Setup Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.12' # 匹配你的 Python 版本
+        python-version: '3.12'
 
     - name: Install CUDA Toolkit
       uses: Jimver/cuda-toolkit@v0.2.21
       id: cuda-toolkit
       with:
-        cuda: '12.8.0' # 严格匹配你的 CUDA 12.8 版本
+        cuda: '12.8.0'
         method: 'network'
-        # 根据编译需要，可以精简组件以加快安装速度
-        sub-packages: '["compiler", "toolkit", "nvcc", "cudart", "cublas"]'
+        sub-packages: '["toolkit", "nvcc"]' # 修正这里
 
     - name: Verify NVCC
       run: |
@@ -36,13 +35,10 @@ jobs:
 
     - name: Build Wheel with CUDA
       env:
-        # 启用 CUDA 后端
         GGML_CUDA: 'on'
-        # 预设常见的 NVIDIA 显卡架构（根据你本地显卡调整，如 86 代表 Ampere/RTX30系, 89 代表 Ada/RTX40系）
-        # 如果不确定，可以保持默认或指定多个
-        CMAKE_ARGS: '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=all'
+        # 优化：针对 Colab 的 T4 显卡（75架构）进行定向编译，速度更快
+        CMAKE_ARGS: '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=75'
       run: |
-        # 使用 --no-clean 并在本地生成 wheel
         pip wheel llama-cpp-python --wheel-dir=dist --no-deps
 
     - name: Upload Wheel Artifact
