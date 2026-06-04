@@ -29,11 +29,6 @@ jobs:
       run: |
         nvcc --version
 
-    - name: Install System Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libwebp-dev libwebm-dev
-
     - name: Clone stable-diffusion.cpp
       run: |
         if [ -n "${{ github.event.inputs.sd_version }}" ]; then
@@ -46,7 +41,7 @@ jobs:
       run: |
         cd stable-diffusion.cpp
         mkdir build && cd build
-        cmake .. -DSD_CUDA=ON -DSD_USE_SYSTEM_WEBP=ON -DSD_USE_SYSTEM_WEBM=ON -DCMAKE_CUDA_ARCHITECTURES=75
+        cmake .. -DSD_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75
         cmake --build . --config Release -j$(nproc)
 
     - name: Package Artifacts
