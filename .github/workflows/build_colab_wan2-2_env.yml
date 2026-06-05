@@ -42,7 +42,7 @@ jobs:
       shell: bash -l {0}
       run: |
         # 确保 /content 目录存在（GitHub Actions runner 默认没有此目录）
-        sudo mkdir -p /content
+        sudo mkdir -p /content && sudo chown $USER /content
         # 创建绝对路径虚拟环境，确保在 Colab 解压后路径完美对齐
         conda create -p /content/wan_env python=3.10 -y
         conda activate /content/wan_env
