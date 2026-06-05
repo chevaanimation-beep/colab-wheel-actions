@@ -1,0 +1,95 @@
+name: Build Colab Wan2.2 Environment
+
+on:
+  workflow_dispatch: # 允许你在 GitHub 仓库的 Actions 页面手动点击按钮触发编译
+
+jobs:
+  build:
+    # 💥 关键点 1：精准匹配 Colab 的 GLIBC 2.35 底座，防止动态链接库运行时报错
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    # 💥 关键点 2：设置 CUDA 12.8.0 硬件编译环境
+    - name: Install CUDA Toolkit
+      uses: Jimver/cuda-toolkit@v0.2.21
+      id: cuda-toolkit
+      with:
+        cuda: '12.8.0'
+        method: 'network'
+        sub-packages: '["toolkit", "nvcc"]'
+
+    # 💥 工业级保命策略：创建 6GB 虚拟内存（Swap），防止 triton 和 sageattention 编译时挤爆 Actions 的 7GB 物理内存
+    - name: Setup Swap Space
+      run: |
+        sudo fallocate -l 6G /swapfile
+        sudo chmod 600 /swapfile
+        sudo mkswap /swapfile
+        sudo swapon /swapfile
+        free -h
+
+    # 3. 配置并初始化 Miniconda，创建闭环沙盒
+    - name: Setup Conda Environment
+      uses: conda-incubator/setup-miniconda@v3
+      with:
+        auto-update-conda: true
+        python-version: '3.10'
+
+    # 4. 核心编译与打包阶段
+    - name: Install and Compile Dependencies
+      shell: bash -l {0}
+      run: |
+        # 确保 /content 目录存在（GitHub Actions runner 默认没有此目录）
+        sudo mkdir -p /content
+        # 创建绝对路径虚拟环境，确保在 Colab 解压后路径完美对齐
+        conda create -p /content/wan_env python=3.10 -y
+        conda activate /content/wan_env
+        
+        echo "🔄 [1/4] 正在安装基础 Torch 2.6.0 (CUDA 12.4 运行库兼容 12.8 驱动)..."
+        pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+        
+        echo "🔄 [2/4] 正在安装常规流体扩散依赖..."
+        pip install -q torchsde einops diffusers accelerate
+        
+        echo "💥 [3/4] 正在编译三大黑科技算子 (限制单线程编译，确保不爆内存)..."
+        # 核心防爆技巧：MAX_JOBS=1 强迫 nvcc 一个一个文件编译，虽然慢几分钟，但绝对不会闪退
+        export MAX_JOBS=1
+        pip install triton==3.2.0
+        pip install xformers==0.0.29.post2
+        pip install sageattention==1.0.6
+        
+        echo "🔄 [4/4] 正在安装图像分割、人脸及媒体后处理包..."
+        pip install av spandrel albumentations insightface onnx opencv-python ultralytics
+        pip install git+https://github.com/facebookresearch/segment-anything.git
+        # 合并安装 onnxruntime-gpu，对齐用户原脚本
+        pip install onnxruntime-gpu
+        
+        echo "🧹 正在深度清理编译残余与缓存..."
+        conda clean --all -y
+        pip cache purge
+        
+    # 5. 将整个环境物理打包
+    - name: Pack Environment Tarball
+      run: |
+        cd /content
+        echo "📦 正在将整个 wan_env 物理打包为 wan_env.tar.gz..."
+        tar -czf wan_env.tar.gz wan_env/
+        ls -lh wan_env.tar.gz
+
+    # 6. 自动化创建 Release 并把 Tar 扔上去
+    - name: Deploy to GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: /content/wan_env.tar.gz
+        tag_name: v2.0-wan2.2-env
+        name: "Wan2.2 Pre-compiled T4 Colab Env (GLIBC 2.35 / CUDA 12.8)"
+        body: |
+          🚀 专为 Google Colab 免费版 T4 打造的万能黑科技预编译环境包。
+          - 基础底座: Ubuntu 22.04 (GLIBC 2.35)
+          - 核心硬件: CUDA 12.8 + Python 3.10
+          - 内置算子: Torch 2.6.0, SageAttention 1.0.6, Triton 3.2.0, XFormers 0.0.29
+          解压即用，跳过繁琐的在线编译。
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
