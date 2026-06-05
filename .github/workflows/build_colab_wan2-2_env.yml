@@ -24,10 +24,10 @@ jobs:
     # 💥 工业级保命策略：创建 6GB 虚拟内存（Swap），防止 triton 和 sageattention 编译时挤爆 Actions 的 7GB 物理内存
     - name: Setup Swap Space
       run: |
-        sudo fallocate -l 6G /swapfile
-        sudo chmod 600 /swapfile
-        sudo mkswap /swapfile
-        sudo swapon /swapfile
+        sudo fallocate -l 6G /swapfile_ci || true
+        sudo chmod 600 /swapfile_ci
+        sudo mkswap /swapfile_ci
+        sudo swapon /swapfile_ci || true
         free -h
 
     # 3. 配置并初始化 Miniconda，创建闭环沙盒
