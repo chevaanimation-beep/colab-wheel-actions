@@ -70,19 +70,26 @@ jobs:
         conda clean --all -y
         pip cache purge
         
-    # 5. 将整个环境物理打包
-    - name: Pack Environment Tarball
+    # 5. 将整个环境物理打包并分卷（GitHub Release 单文件上限 2GB）
+    - name: Pack and Split Environment Tarball
       run: |
         cd /content
-        echo "📦 正在将整个 wan_env 物理打包为 wan_env.tar.gz..."
-        tar -czf wan_env.tar.gz wan_env/
-        ls -lh wan_env.tar.gz
+        echo "📦 正在将整个 wan_env 物理打包..."
+        tar -cf - wan_env/ | gzip -1 | split -b 1500m - wan_env.tar.gz.part_
+        echo "✅ 分卷完成，文件列表："
+        ls -lh wan_env.tar.gz.part_*
+        echo "📝 生成合并说明文件..."
+        echo '在 Colab 中执行以下命令合并并解压：' > /content/README_合并说明.txt
+        echo 'cat wan_env.tar.gz.part_* > wan_env.tar.gz' >> /content/README_合并说明.txt
+        echo 'tar -xzf wan_env.tar.gz' >> /content/README_合并说明.txt
 
-    # 6. 自动化创建 Release 并把 Tar 扔上去
+    # 6. 自动化创建 Release 并上传所有分卷
     - name: Deploy to GitHub Release
       uses: softprops/action-gh-release@v2
       with:
-        files: /content/wan_env.tar.gz
+        files: |
+          /content/wan_env.tar.gz.part_*
+          /content/README_合并说明.txt
         tag_name: v2.0-wan2.2-env
         name: "Wan2.2 Pre-compiled T4 Colab Env (GLIBC 2.35 / CUDA 12.8)"
         body: |
@@ -90,6 +97,11 @@ jobs:
           - 基础底座: Ubuntu 22.04 (GLIBC 2.35)
           - 核心硬件: CUDA 12.8 + Python 3.10
           - 内置算子: Torch 2.6.0, SageAttention 1.0.6, Triton 3.2.0, XFormers 0.0.29
-          解压即用，跳过繁琐的在线编译。
+          
+          **使用方法：**
+          1. 下载所有 `wan_env.tar.gz.part_*` 文件
+          2. 在 Colab 中执行：`cat wan_env.tar.gz.part_* > wan_env.tar.gz`
+          3. 解压：`tar -xzf wan_env.tar.gz`
+          4. 激活环境：`conda activate /content/wan_env`
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
