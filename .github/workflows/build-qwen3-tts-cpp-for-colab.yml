@@ -65,7 +65,7 @@ jobs:
     - name: Build GGML with CUDA
       run: |
         # 限制架构为 T4(7.5), A100(8.0), L4(8.9)，防止 CI 编译超时或 OOM
-        cmake -S ggml -B ggml/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="75;80;86"
+        cmake -S ggml -B ggml/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75
         cmake --build ggml/build --config Release -j$(nproc)
 
     - name: Build qwen3-tts.cpp
