@@ -39,7 +39,7 @@ jobs:
       run: |
         # 官方文档: cmake -S ggml -B ggml/build -DGGML_METAL=ON
         # 修正为 Colab 需要的 CUDA，并覆盖常见 Colab GPU 架构 (T4/A100/L4) 防止 OOM
-        cmake -S ggml -B ggml/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="75;80;89"
+        cmake -S ggml -B ggml/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75
         cmake --build ggml/build --config Release -j$(nproc)
     # =====================================================================
 
