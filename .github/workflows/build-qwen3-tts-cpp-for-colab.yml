@@ -1,0 +1,64 @@
+name: Build and Release for Colab
+
+on:
+  workflow_dispatch: # 允许在 GitHub 网页上手动点击触发
+  push:
+    tags:
+      - 'v*' # 也可以支持打正式 tag 时触发
+
+# 必须赋予写权限，否则无法创建 Release
+permissions:
+  contents: write 
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive # 必须拉取 ggml 子模块
+
+    - name: Install CUDA Toolkit
+      uses: Jimver/cuda-toolkit@v0.2.21
+      id: cuda-toolkit
+      with:
+        cuda: '12.8.0'
+        method: 'network'
+        sub-packages: '["toolkit", "nvcc"]'
+
+    - name: Build GGML with CUDA
+      run: |
+        # 限制架构为 T4(7.5), A100(8.0), L4(8.9)，防止 CI 编译超时或 OOM
+        cmake -S ggml -B ggml/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75
+        cmake --build ggml/build --config Release -j$(nproc)
+
+    - name: Build qwen3-tts.cpp
+      run: |
+        cmake -S . -B build
+        cmake --build build --config Release -j$(nproc)
+
+    - name: Package Artifacts
+      run: |
+        mkdir -p colab_dist
+        cp build/qwen3-tts-cli colab_dist/
+        # 查找并复制 GGML 编译出的动态链接库 (.so)
+        find ggml/build/src -name "*.so" -exec cp {} colab_dist/ \; 2>/dev/null || true
+        tar -czvf qwen3-tts-colab.tar.gz -C colab_dist .
+
+    - name: Create or Update Release
+      uses: ncipollo/release-action@v1
+      with:
+        tag: "colab-latest"               # 固定的 Tag 名称
+        name: "Qwen3-TTS.cpp Colab Latest Build"
+        artifacts: "qwen3-tts-colab.tar.gz"
+        allowUpdates: true                # 允许更新已有的 Release
+        replacesArtifacts: true           # 替换已有的文件
+        makeLatest: true                  # 标记为最新 Release
+        body: |
+          Automated build for Google Colab (Ubuntu 22.04 + CUDA 12.8).
+          **How to use in Colab:**
+          ```bash
+          !wget -q https://github.com/${{ github.repository }}/releases/download/colab-latest/qwen3-tts-colab.tar.gz
+          ```
