@@ -51,7 +51,7 @@ jobs:
 
     - name: Build GGML with CUDA
       run: |
-        cmake -S ggml -B ggml/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="75;80;89"
+        cmake -S ggml -B ggml/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75
         cmake --build ggml/build --config Release -j$(nproc)
 
     - name: Build qwen3-tts.cpp
