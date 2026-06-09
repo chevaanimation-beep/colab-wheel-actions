@@ -1,12 +1,11 @@
 name: Build and Release for Colab
 
 on:
-  workflow_dispatch: # 允许手动触发
+  workflow_dispatch: 
   push:
     tags:
       - 'v*'
 
-# 必须赋予写权限，否则无法创建 Release
 permissions:
   contents: write 
 
@@ -15,17 +14,12 @@ jobs:
     runs-on: ubuntu-22.04
     
     steps:
-    # ================= 1. 拉取源码 (完美替代 git clone & submodule update) =================
     - name: Checkout Target Repository
       uses: actions/checkout@v4
       with:
-        # 直接指定官方目标仓库，解决找不到 CMakeLists.txt 的问题
         repository: predict-woo/qwen3-tts.cpp
-        # 自动递归拉取子模块，等价于官方的 git submodule update --init --recursive
         submodules: recursive
-    # =====================================================================
 
-    # 2. 安装 CUDA Toolkit (Colab 环境需要)
     - name: Install CUDA Toolkit
       uses: Jimver/cuda-toolkit@v0.2.21
       id: cuda-toolkit
@@ -34,33 +28,46 @@ jobs:
         method: 'network'
         sub-packages: '["toolkit", "nvcc"]'
 
-    # ================= 3. 编译 GGML (对齐官方文档) =================
+    # ================= 新增：修复 CI 环境缺少 libcuda.so.1 的问题 =================
+    - name: Prepare CUDA Stubs (Fix libcuda.so.1 missing in CI)
+      run: |
+        # 1. 动态查找 CUDA stubs 目录 (通常在 /usr/local/cuda-12.8/lib64/stubs)
+        CUDA_STUBS=$(ls -d /usr/local/cuda*/lib64/stubs 2>/dev/null | head -n 1)
+        if [ -z "$CUDA_STUBS" ]; then
+          echo "::error::CUDA stubs directory not found!"
+          exit 1
+        fi
+        echo "Found CUDA stubs at: $CUDA_STUBS"
+        
+        # 2. 创建 libcuda.so.1 软链接 (stubs 目录默认只有 libcuda.so，链接器有时会死磕 .1 后缀)
+        if [ ! -f "$CUDA_STUBS/libcuda.so.1" ]; then
+          ln -s "$CUDA_STUBS/libcuda.so" "$CUDA_STUBS/libcuda.so.1"
+        fi
+        
+        # 3. 将 stubs 目录注入全局环境变量，让后续的 CMake 和链接器能找到它
+        echo "LIBRARY_PATH=$CUDA_STUBS:$LIBRARY_PATH" >> $GITHUB_ENV
+        echo "LD_LIBRARY_PATH=$CUDA_STUBS:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+    # =====================================================================
+
     - name: Build GGML with CUDA
       run: |
-        # 官方文档: cmake -S ggml -B ggml/build -DGGML_METAL=ON
-        # 修正为 Colab 需要的 CUDA，并覆盖常见 Colab GPU 架构 (T4/A100/L4) 防止 OOM
-        cmake -S ggml -B ggml/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75
+        cmake -S ggml -B ggml/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="75;80;89"
         cmake --build ggml/build --config Release -j$(nproc)
-    # =====================================================================
 
-    # ================= 4. 编译主项目 (对齐官方文档) =================
     - name: Build qwen3-tts.cpp
       run: |
-        # 官方文档: cmake -S . -B build
+        # 环境变量 LIBRARY_PATH 已自动继承，链接器现在能找到 libcuda.so.1 了
         cmake -S . -B build
         cmake --build build --config Release -j$(nproc)
-    # =====================================================================
 
-    # 5. 打包产物
     - name: Package Artifacts
       run: |
         mkdir -p colab_dist
         cp build/qwen3-tts-cli colab_dist/
-        # 查找并复制可能存在的动态链接库 (如果 CMake 编译为静态库则会自动跳过)
+        # 查找并复制 GGML 编译出的动态链接库 (.so)
         find ggml/build/src -name "*.so" -exec cp {} colab_dist/ \; 2>/dev/null || true
         tar -czvf qwen3-tts-colab.tar.gz -C colab_dist .
 
-    # 6. 创建或更新 Release
     - name: Create or Update Release
       uses: ncipollo/release-action@v1
       with:
