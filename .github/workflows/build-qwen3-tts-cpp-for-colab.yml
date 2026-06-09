@@ -15,45 +15,17 @@ jobs:
     runs-on: ubuntu-22.04
     
     steps:
-    - name: Checkout Code
+    # ================= 1. 拉取源码 (完美替代 git clone & submodule update) =================
+    - name: Checkout Target Repository
       uses: actions/checkout@v4
-
-        # ================= 修复版：智能修复 Submodule 缺失问题 =================
-    - name: Ensure GGML Submodule Exists (Auto-Fix)
-      run: |
-        echo "Attempting to initialize submodules normally..."
-        git submodule update --init --recursive || true
-        
-        # 检查 ggml 目录是否真的存在且包含核心文件
-        if [ ! -f "ggml/CMakeLists.txt" ]; then
-          echo "::warning::ggml submodule is missing or empty in your repository."
-          echo "Fallback: Fetching complete ggml from the original repository..."
-          
-          # 清理可能存在的空壳目录
-          rm -rf ggml
-          
-          # 1. 克隆原仓库 (使用 --depth 1 加速)
-          git clone --depth 1 https://github.com/predict-woo/qwen3-tts.cpp.git /tmp/qwen3-tts-original
-          
-          # 2. 【关键修复】进入原仓库目录，并强制递归拉取子模块的实际代码
-          cd /tmp/qwen3-tts-original
-          git submodule update --init --recursive --depth 1
-          cd $GITHUB_WORKSPACE
-          
-          # 3. 将包含完整代码的 ggml 移动到当前工作目录
-          mv /tmp/qwen3-tts-original/ggml ./ggml
-          rm -rf /tmp/qwen3-tts-original
-        fi
-        
-        # 4. 最终验证并打印目录内容（方便调试）
-        if [ ! -f "ggml/CMakeLists.txt" ]; then
-          echo "::error::Failed to obtain ggml source code. Contents of ggml directory:"
-          ls -la ggml || true
-          exit 1
-        fi
-        echo "✅ Success! ggml is ready and contains CMakeLists.txt."
+      with:
+        # 直接指定官方目标仓库，解决找不到 CMakeLists.txt 的问题
+        repository: predict-woo/qwen3-tts.cpp
+        # 自动递归拉取子模块，等价于官方的 git submodule update --init --recursive
+        submodules: recursive
     # =====================================================================
 
+    # 2. 安装 CUDA Toolkit (Colab 环境需要)
     - name: Install CUDA Toolkit
       uses: Jimver/cuda-toolkit@v0.2.21
       id: cuda-toolkit
@@ -62,25 +34,33 @@ jobs:
         method: 'network'
         sub-packages: '["toolkit", "nvcc"]'
 
+    # ================= 3. 编译 GGML (对齐官方文档) =================
     - name: Build GGML with CUDA
       run: |
-        # 限制架构为 T4(7.5), A100(8.0), L4(8.9)，防止 CI 编译超时或 OOM
-        cmake -S ggml -B ggml/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75
+        # 官方文档: cmake -S ggml -B ggml/build -DGGML_METAL=ON
+        # 修正为 Colab 需要的 CUDA，并覆盖常见 Colab GPU 架构 (T4/A100/L4) 防止 OOM
+        cmake -S ggml -B ggml/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="75;80;89"
         cmake --build ggml/build --config Release -j$(nproc)
+    # =====================================================================
 
+    # ================= 4. 编译主项目 (对齐官方文档) =================
     - name: Build qwen3-tts.cpp
       run: |
+        # 官方文档: cmake -S . -B build
         cmake -S . -B build
         cmake --build build --config Release -j$(nproc)
+    # =====================================================================
 
+    # 5. 打包产物
     - name: Package Artifacts
       run: |
         mkdir -p colab_dist
         cp build/qwen3-tts-cli colab_dist/
-        # 查找并复制 GGML 编译出的动态链接库 (.so)
+        # 查找并复制可能存在的动态链接库 (如果 CMake 编译为静态库则会自动跳过)
         find ggml/build/src -name "*.so" -exec cp {} colab_dist/ \; 2>/dev/null || true
         tar -czvf qwen3-tts-colab.tar.gz -C colab_dist .
 
+    # 6. 创建或更新 Release
     - name: Create or Update Release
       uses: ncipollo/release-action@v1
       with:
@@ -95,4 +75,5 @@ jobs:
           **How to use in Colab:**
           ```bash
           !wget -q https://github.com/${{ github.repository }}/releases/download/colab-latest/qwen3-tts-colab.tar.gz
+          !tar -xzvf qwen3-tts-colab.tar.gz
           ```
