@@ -29,9 +29,9 @@ jobs:
         sub-packages: '["toolkit", "nvcc"]'
 
     # ================= 新增：修复 CI 环境缺少 libcuda.so.1 的问题 =================
-    - name: Prepare CUDA Stubs (Fix libcuda.so.1 missing in CI)
+        - name: Prepare CUDA Stubs (Fix libcuda.so.1 missing in CI)
       run: |
-        # 1. 动态查找 CUDA stubs 目录 (通常在 /usr/local/cuda-12.8/lib64/stubs)
+        # 1. 动态查找 CUDA stubs 目录
         CUDA_STUBS=$(ls -d /usr/local/cuda*/lib64/stubs 2>/dev/null | head -n 1)
         if [ -z "$CUDA_STUBS" ]; then
           echo "::error::CUDA stubs directory not found!"
@@ -39,12 +39,12 @@ jobs:
         fi
         echo "Found CUDA stubs at: $CUDA_STUBS"
         
-        # 2. 创建 libcuda.so.1 软链接 (stubs 目录默认只有 libcuda.so，链接器有时会死磕 .1 后缀)
+        # 2. 【修复】：加上 sudo 解决系统目录无写权限的问题
         if [ ! -f "$CUDA_STUBS/libcuda.so.1" ]; then
-          ln -s "$CUDA_STUBS/libcuda.so" "$CUDA_STUBS/libcuda.so.1"
+          sudo ln -s "$CUDA_STUBS/libcuda.so" "$CUDA_STUBS/libcuda.so.1"
         fi
         
-        # 3. 将 stubs 目录注入全局环境变量，让后续的 CMake 和链接器能找到它
+        # 3. 将 stubs 目录注入全局环境变量
         echo "LIBRARY_PATH=$CUDA_STUBS:$LIBRARY_PATH" >> $GITHUB_ENV
         echo "LD_LIBRARY_PATH=$CUDA_STUBS:$LD_LIBRARY_PATH" >> $GITHUB_ENV
     # =====================================================================
