@@ -18,30 +18,40 @@ jobs:
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    # ================= 新增：智能修复 Submodule 缺失问题 =================
+        # ================= 修复版：智能修复 Submodule 缺失问题 =================
     - name: Ensure GGML Submodule Exists (Auto-Fix)
       run: |
-        # 1. 尝试正常初始化 submodule
+        echo "Attempting to initialize submodules normally..."
         git submodule update --init --recursive || true
         
-        # 2. 检查 ggml 目录是否真的存在且包含核心文件 (CMakeLists.txt)
+        # 检查 ggml 目录是否真的存在且包含核心文件
         if [ ! -f "ggml/CMakeLists.txt" ]; then
           echo "::warning::ggml submodule is missing or empty in your repository."
-          echo "Fallback: Fetching ggml from the original repository..."
+          echo "Fallback: Fetching complete ggml from the original repository..."
           
-          # 3. 从原仓库克隆并提取 ggml (使用 --depth 1 加速)
-          git clone --depth 1 https://github.com/predict-woo/qwen3-tts.cpp.git /tmp/qwen3-tts-original
+          # 清理可能存在的空壳目录
           rm -rf ggml
+          
+          # 1. 克隆原仓库 (使用 --depth 1 加速)
+          git clone --depth 1 https://github.com/predict-woo/qwen3-tts.cpp.git /tmp/qwen3-tts-original
+          
+          # 2. 【关键修复】进入原仓库目录，并强制递归拉取子模块的实际代码
+          cd /tmp/qwen3-tts-original
+          git submodule update --init --recursive --depth 1
+          cd $GITHUB_WORKSPACE
+          
+          # 3. 将包含完整代码的 ggml 移动到当前工作目录
           mv /tmp/qwen3-tts-original/ggml ./ggml
           rm -rf /tmp/qwen3-tts-original
         fi
         
-        # 4. 最终验证
+        # 4. 最终验证并打印目录内容（方便调试）
         if [ ! -f "ggml/CMakeLists.txt" ]; then
-          echo "::error::Failed to obtain ggml source code."
+          echo "::error::Failed to obtain ggml source code. Contents of ggml directory:"
+          ls -la ggml || true
           exit 1
         fi
-        echo "✅ ggml is ready."
+        echo "✅ Success! ggml is ready and contains CMakeLists.txt."
     # =====================================================================
 
     - name: Install CUDA Toolkit
