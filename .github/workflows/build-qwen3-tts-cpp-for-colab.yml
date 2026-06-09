@@ -64,8 +64,14 @@ jobs:
       run: |
         mkdir -p colab_dist
         cp build/qwen3-tts-cli colab_dist/
-        # 查找并复制 GGML 编译出的动态链接库 (.so)
-        find ggml/build/src -name "*.so" -exec cp {} colab_dist/ \; 2>/dev/null || true
+        
+        # 【核心修复】：
+        # 1. 扩大搜索路径至整个 ggml/build 和 build 目录
+        # 2. 改为 "*.so*" 后缀，通吃所有版本号尾缀的文件
+        # 3. 使用 cp -d 保留可能存在的软链接关系
+        find ggml/build build -name "*.so*" -exec cp -d {} colab_dist/ \; 2>/dev/null || true
+        
+        # 打包输出
         tar -czvf qwen3-tts-colab.tar.gz -C colab_dist .
 
     - name: Create or Update Release
