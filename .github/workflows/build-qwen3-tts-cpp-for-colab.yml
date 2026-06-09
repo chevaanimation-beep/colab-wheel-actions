@@ -1,10 +1,10 @@
 name: Build and Release for Colab
 
 on:
-  workflow_dispatch: # 允许在 GitHub 网页上手动点击触发
+  workflow_dispatch: # 允许手动触发
   push:
     tags:
-      - 'v*' # 也可以支持打正式 tag 时触发
+      - 'v*'
 
 # 必须赋予写权限，否则无法创建 Release
 permissions:
@@ -17,8 +17,32 @@ jobs:
     steps:
     - name: Checkout Code
       uses: actions/checkout@v4
-      with:
-        submodules: recursive # 必须拉取 ggml 子模块
+
+    # ================= 新增：智能修复 Submodule 缺失问题 =================
+    - name: Ensure GGML Submodule Exists (Auto-Fix)
+      run: |
+        # 1. 尝试正常初始化 submodule
+        git submodule update --init --recursive || true
+        
+        # 2. 检查 ggml 目录是否真的存在且包含核心文件 (CMakeLists.txt)
+        if [ ! -f "ggml/CMakeLists.txt" ]; then
+          echo "::warning::ggml submodule is missing or empty in your repository."
+          echo "Fallback: Fetching ggml from the original repository..."
+          
+          # 3. 从原仓库克隆并提取 ggml (使用 --depth 1 加速)
+          git clone --depth 1 https://github.com/predict-woo/qwen3-tts.cpp.git /tmp/qwen3-tts-original
+          rm -rf ggml
+          mv /tmp/qwen3-tts-original/ggml ./ggml
+          rm -rf /tmp/qwen3-tts-original
+        fi
+        
+        # 4. 最终验证
+        if [ ! -f "ggml/CMakeLists.txt" ]; then
+          echo "::error::Failed to obtain ggml source code."
+          exit 1
+        fi
+        echo "✅ ggml is ready."
+    # =====================================================================
 
     - name: Install CUDA Toolkit
       uses: Jimver/cuda-toolkit@v0.2.21
@@ -31,7 +55,7 @@ jobs:
     - name: Build GGML with CUDA
       run: |
         # 限制架构为 T4(7.5), A100(8.0), L4(8.9)，防止 CI 编译超时或 OOM
-        cmake -S ggml -B ggml/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=75
+        cmake -S ggml -B ggml/build -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="75;80;86"
         cmake --build ggml/build --config Release -j$(nproc)
 
     - name: Build qwen3-tts.cpp
@@ -50,12 +74,12 @@ jobs:
     - name: Create or Update Release
       uses: ncipollo/release-action@v1
       with:
-        tag: "colab-latest"               # 固定的 Tag 名称
+        tag: "colab-latest"
         name: "Qwen3-TTS.cpp Colab Latest Build"
         artifacts: "qwen3-tts-colab.tar.gz"
-        allowUpdates: true                # 允许更新已有的 Release
-        replacesArtifacts: true           # 替换已有的文件
-        makeLatest: true                  # 标记为最新 Release
+        allowUpdates: true
+        replacesArtifacts: true
+        makeLatest: true
         body: |
           Automated build for Google Colab (Ubuntu 22.04 + CUDA 12.8).
           **How to use in Colab:**
