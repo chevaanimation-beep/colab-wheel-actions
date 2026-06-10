@@ -20,18 +20,22 @@ jobs:
         repository: predict-woo/qwen3-tts.cpp
         submodules: recursive
 
-    # ================= ⚡ 核心修复：安装完整的 Vulkan SDK（包含 glslc） =================
-    - name: Setup Vulkan SDK
-      uses: jakubito/setup-vulkan-sdk@v1.1.1
-      with:
-        vulkan-query-version: '1.3.204.1' # 与你日志中发现的 1.3.204 版本匹配
-        vulkan-components: 'Vulkan-Headers, Vulkan-Loader, glslang' # 确保包含编译器
-        vulkan-use-cache: true
+    # ================= ⚡ 核心修复：直接从官方源安装完整 Vulkan SDK =================
+    - name: Install Official Vulkan SDK (via LunarG Repo)
+      run: |
+        # 1. 导入 LunarG 官方签名公钥
+        wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
+        
+        # 2. 添加针对 Ubuntu 22.04 (jammy) 的 Vulkan 官方源
+        sudo wget -qO /etc/apt/sources.list.dir/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+        
+        # 3. 更新源并安装完整的 vulkan-sdk (自带 glslc 编译器)
+        sudo apt-get update
+        sudo apt-get install -y vulkan-sdk build-essential cmake
 
     # ================= 使用 Vulkan 后端编译 GGML =================
     - name: Build GGML with Vulkan
       run: |
-        # setup-vulkan-sdk 会自动设置 VULKAN_SDK 环境变量，CMake 能够完美识别
         cmake -S ggml -B ggml/build -DGGML_VULKAN=ON
         cmake --build ggml/build --config Release -j$(nproc)
 
