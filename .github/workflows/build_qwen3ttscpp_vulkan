@@ -1,4 +1,4 @@
-name: Build and Release for Colab (Vulkan Edition)
+name: Build and Release for Colab (Vulkan)
 
 on:
   workflow_dispatch: 
@@ -20,22 +20,28 @@ jobs:
         repository: predict-woo/qwen3-tts.cpp
         submodules: recursive
 
-    # ================= 新增：安装 Vulkan 编译依赖 =================
+    # ================= 替换为：安装 Vulkan 编译依赖 =================
     - name: Install Vulkan SDK and Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y libvulkan-dev vulkan-tools build-essential cmake
+        # libvulkan-dev: Vulkan 头文件和 loader
+        # shaderc: 提供 glslc，ggml 编译 Vulkan 着色器必需
+        # vulkan-tools: 提供 vulkaninfo，可用于验证环境
+        sudo apt-get install -y libvulkan-dev shaderc vulkan-tools
+        
+        # 验证 glslc 是否安装成功
+        glslc --version
+    # =================================================================
 
-    # ================= 修改：使用 Vulkan 后端编译 GGML =================
     - name: Build GGML with Vulkan
       run: |
+        # 开启 Vulkan 后端
         cmake -S ggml -B ggml/build -DGGML_VULKAN=ON
         cmake --build ggml/build --config Release -j$(nproc)
 
-    # ================= 修改：编译项目核心组件 =================
     - name: Build qwen3-tts.cpp
       run: |
-        cmake -S . -B build -DGGML_VULKAN=ON
+        cmake -S . -B build
         cmake --build build --config Release -j$(nproc)
 
     - name: Package Artifacts
@@ -43,29 +49,25 @@ jobs:
         mkdir -p colab_dist
         cp build/qwen3-tts-cli colab_dist/
         
-        # 收集编译出的动态链接库（Vulkan 后端会产生额外的 ggml-vulkan.so 等文件）
+        # 查找并复制编译出的动态链接库 (如 libggml-vulkan.so)
         find ggml/build build -name "*.so*" -exec cp -d {} colab_dist/ \; 2>/dev/null || true
         
         # 打包输出
-        tar -czvf qwen3-tts-colab-vulkan.tar.gz -C colab_dist .
+        tar -czvf qwen3-tts-colab.tar.gz -C colab_dist .
 
     - name: Create or Update Release
       uses: ncipollo/release-action@v1
       with:
-        tag: "colab-vulkan-latest"
-        name: "Qwen3-TTS.cpp Colab Vulkan Build"
-        artifacts: "qwen3-tts-colab-vulkan.tar.gz"
+        tag: "colab-vulkan-latest" # 建议换个 tag 名，以免和 CUDA 版本冲突
+        name: "Qwen3-TTS.cpp Colab Latest Build (Vulkan)"
+        artifacts: "qwen3-tts-colab.tar.gz"
         allowUpdates: true
         replacesArtifacts: true
         makeLatest: true
         body: |
-          Automated build for Google Colab (Ubuntu 22.04 + Vulkan Accelerated).
+          Automated build for Google Colab (Ubuntu 22.04 + Vulkan).
           **How to use in Colab:**
           ```bash
-          # 1. 安装 Colab 环境所需的 Vulkan 驱动运行时
-          !apt-get update && apt-get install -y libvulkan1 vulkan-tools
-          
-          # 2. 下载并解压 Vulkan 编译版本的引擎
-          !wget -q [https://github.com/$](https://github.com/$){{ github.repository }}/releases/download/colab-vulkan-latest/qwen3-tts-colab-vulkan.tar.gz
-          !tar -xzvf qwen3-tts-colab-vulkan.tar.gz
+          !wget -q https://github.com/${{ github.repository }}/releases/download/colab-vulkan-latest/qwen3-tts-colab.tar.gz
+          !tar -xzvf qwen3-tts-colab.tar.gz
           ```
