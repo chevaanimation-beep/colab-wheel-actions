@@ -60,6 +60,7 @@ jobs:
     - name: Create GitHub Release and Upload Artifacts
       uses: softprops/action-gh-release@v2
       with:
+        files: dist/*
         tag_name: sd-cpp-aistudio-v1.0.${{ github.run_number }}
         name: "stable-diffusion.cpp CUDA Build for Baidu AIStudio (V100 / CUDA 12.0) v1.0.${{ github.run_number }}"
         body: |
