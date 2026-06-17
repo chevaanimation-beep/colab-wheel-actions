@@ -10,8 +10,8 @@ on:
 
 jobs:
   build:
-    # 匹配百度 AIStudio 的 Ubuntu 20.04 (GLIBC 2.31) 底座
-    runs-on: ubuntu-20.04
+    # GitHub 支持的最接近 AIStudio 的版本（AIStudio 为 Ubuntu 20.04，此处用 22.04 编译）
+    runs-on: ubuntu-22.04
 
     steps:
     - name: Checkout Code
@@ -64,8 +64,12 @@ jobs:
         name: "stable-diffusion.cpp CUDA Build for Baidu AIStudio (V100 / CUDA 12.0) v1.0.${{ github.run_number }}"
         body: |
           专为百度 AIStudio V100 环境编译的 stable-diffusion.cpp 二进制文件。
-          - 目标系统: Ubuntu 20.04 (GLIBC 2.31)
+          - 编译环境: Ubuntu 22.04 (GitHub Actions)
+          - 目标系统: 百度 AIStudio Ubuntu 20.04+
           - CUDA 版本: 12.0
           - GPU 架构: Tesla V100-SXM2 (Compute Capability 70, Volta)
+          
+          注意：在 Ubuntu 22.04 编译，用于 20.04+ 环境可能存在 GLIBC 兼容性问题。
+          如遇问题请在 AIStudio 本地编译。
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
