@@ -1,0 +1,71 @@
+name: Build stable-diffusion.cpp CUDA (Baidu AIStudio V100)
+
+on:
+  workflow_dispatch:
+    inputs:
+      sd_version:
+        description: 'stable-diffusion.cpp version/tag to build (leave empty for latest master)'
+        required: false
+        default: ''
+
+jobs:
+  build:
+    # 匹配百度 AIStudio 的 Ubuntu 20.04 (GLIBC 2.31) 底座
+    runs-on: ubuntu-20.04
+
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Install CUDA Toolkit 12.0
+      uses: Jimver/cuda-toolkit@v0.2.21
+      id: cuda-toolkit
+      with:
+        cuda: '12.0.0'
+        method: 'network'
+        sub-packages: '["toolkit", "nvcc"]'
+
+    - name: Verify NVCC
+      run: |
+        nvcc --version
+
+    - name: Clone stable-diffusion.cpp
+      run: |
+        if [ -n "${{ github.event.inputs.sd_version }}" ]; then
+          git clone --recursive --branch "${{ github.event.inputs.sd_version }}" https://github.com/leejet/stable-diffusion.cpp.git
+        else
+          git clone --recursive https://github.com/leejet/stable-diffusion.cpp.git
+        fi
+
+    - name: Build with CUDA
+      run: |
+        cd stable-diffusion.cpp
+        mkdir build && cd build
+        # V100 = Volta 架构，CUDA Architecture = 70
+        cmake .. -DSD_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=70
+        cmake --build . --config Release -j$(nproc)
+
+    - name: Package Artifacts
+      run: |
+        cd stable-diffusion.cpp/build
+        mkdir -p ../../dist
+        # 收集编译产物（可执行文件）
+        find . -maxdepth 2 -type f \( -name "sd" -o -name "sd-cli" -o -name "sd-server" -o -name "*.so" -o -name "*.a" \) -exec cp {} ../../dist/ \;
+        # 如果 bin 目录下有产物也一并复制
+        if [ -d bin ]; then
+          cp -r bin/* ../../dist/ 2>/dev/null || true
+        fi
+        ls -lh ../../dist/
+
+    - name: Create GitHub Release and Upload Artifacts
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: sd-cpp-aistudio-v1.0.${{ github.run_number }}
+        name: "stable-diffusion.cpp CUDA Build for Baidu AIStudio (V100 / CUDA 12.0) v1.0.${{ github.run_number }}"
+        body: |
+          专为百度 AIStudio V100 环境编译的 stable-diffusion.cpp 二进制文件。
+          - 目标系统: Ubuntu 20.04 (GLIBC 2.31)
+          - CUDA 版本: 12.0
+          - GPU 架构: Tesla V100-SXM2 (Compute Capability 70, Volta)
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
