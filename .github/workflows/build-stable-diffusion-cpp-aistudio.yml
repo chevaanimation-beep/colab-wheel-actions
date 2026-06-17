@@ -10,24 +10,24 @@ on:
 
 jobs:
   build:
-    # GitHub 支持的最接近 AIStudio 的版本（AIStudio 为 Ubuntu 20.04，此处用 22.04 编译）
+    # 宿主机用 ubuntu-22.04，但实际编译在 Docker 容器（Ubuntu 20.04 + CUDA 11.8）中执行
+    # 这样编译产物链接的 GLIBC 2.31，与 AIStudio 完全兼容
     runs-on: ubuntu-22.04
+    container:
+      image: nvidia/cuda:11.8.0-devel-ubuntu20.04
+      options: --user root
 
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
-
-    - name: Install CUDA Toolkit 11.8
-      uses: Jimver/cuda-toolkit@v0.2.21
-      id: cuda-toolkit
-      with:
-        cuda: '11.8.0'
-        method: 'network'
-        sub-packages: '["toolkit", "nvcc"]'
-
-    - name: Verify NVCC
+    - name: Install Build Tools
       run: |
+        apt-get update
+        apt-get install -y git cmake g++ make
+
+    - name: Verify Environment
+      run: |
+        cat /etc/os-release | head -3
         nvcc --version
+        ldd --version | head -1
 
     - name: Clone stable-diffusion.cpp
       run: |
@@ -37,21 +37,28 @@ jobs:
           git clone --recursive https://github.com/leejet/stable-diffusion.cpp.git
         fi
 
+    - name: Setup Swap (prevent OOM)
+      run: |
+        fallocate -l 6G /swapfile_build || true
+        chmod 600 /swapfile_build
+        mkswap /swapfile_build
+        swapon /swapfile_build || true
+        free -h
+
     - name: Build with CUDA
       run: |
         cd stable-diffusion.cpp
         mkdir build && cd build
         # V100 = Volta 架构，CUDA Architecture = 70
-        cmake .. -DSD_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=70
-        cmake --build . --config Release -j$(nproc)
+        # 限制 -j2 防止 OOM
+        cmake .. -DSD_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_BUILD_TYPE=Release
+        cmake --build . --config Release -j2
 
     - name: Package Artifacts
       run: |
         cd stable-diffusion.cpp/build
         mkdir -p ../../dist
-        # 收集编译产物（可执行文件）
         find . -maxdepth 2 -type f \( -name "sd" -o -name "sd-cli" -o -name "sd-server" -o -name "*.so" -o -name "*.a" \) -exec cp {} ../../dist/ \;
-        # 如果 bin 目录下有产物也一并复制
         if [ -d bin ]; then
           cp -r bin/* ../../dist/ 2>/dev/null || true
         fi
@@ -65,12 +72,9 @@ jobs:
         name: "stable-diffusion.cpp CUDA Build for Baidu AIStudio (V100 / CUDA 11.8) v1.0.${{ github.run_number }}"
         body: |
           专为百度 AIStudio V100 环境编译的 stable-diffusion.cpp 二进制文件。
-          - 编译环境: Ubuntu 22.04 (GitHub Actions)
-          - 目标系统: 百度 AIStudio Ubuntu 20.04+
-          - CUDA 版本: 11.8（匹配 AIStudio 预装 CUDA Toolkit）
+          - 编译环境: **Docker Ubuntu 20.04** + CUDA 11.8 (GLIBC 2.31)
+          - 目标系统: 百度 AIStudio Ubuntu 20.04
+          - CUDA 版本: 11.8
           - GPU 架构: Tesla V100-SXM2 (Compute Capability 70, Volta)
-          
-          注意：在 Ubuntu 22.04 编译，用于 20.04+ 环境可能存在 GLIBC 兼容性问题。
-          如遇问题请在 AIStudio 本地编译。
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
