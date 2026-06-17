@@ -1,4 +1,4 @@
-name: Build stable-diffusion.cpp CUDA (Baidu AIStudio V100)
+name: Build stable-diffusion.cpp CUDA (Tencent CNB L40)
 
 on:
   workflow_dispatch:
@@ -10,24 +10,24 @@ on:
 
 jobs:
   build:
-    # 宿主机 ubuntu-22.04，实际编译在 Docker 容器中执行
-    # CUDA 12.6 没有 Ubuntu 20.04 的官方镜像，使用 Ubuntu 22.04 (GLIBC 2.35)
+    # 腾讯 CNB 也是 Ubuntu 22.04，GLIBC 版本天然一致，无需 Docker
     runs-on: ubuntu-22.04
-    container:
-      image: nvidia/cuda:12.6.0-devel-ubuntu22.04
-      options: --user root
 
     steps:
-    - name: Install Build Tools
-      run: |
-        apt-get update
-        apt-get install -y git cmake g++ make
+    - name: Checkout Code
+      uses: actions/checkout@v4
 
-    - name: Verify Environment
+    - name: Install CUDA Toolkit 12.4
+      uses: Jimver/cuda-toolkit@v0.2.21
+      id: cuda-toolkit
+      with:
+        cuda: '12.4.0'
+        method: 'network'
+        sub-packages: '["toolkit", "nvcc"]'
+
+    - name: Verify NVCC
       run: |
-        cat /etc/os-release | head -3
         nvcc --version
-        ldd --version | head -1
 
     - name: Clone stable-diffusion.cpp
       run: |
@@ -37,22 +37,13 @@ jobs:
           git clone --recursive https://github.com/leejet/stable-diffusion.cpp.git
         fi
 
-    - name: Setup Swap (prevent OOM)
-      run: |
-        fallocate -l 6G /swapfile_build || true
-        chmod 600 /swapfile_build
-        mkswap /swapfile_build
-        swapon /swapfile_build || true
-        free -h
-
     - name: Build with CUDA
       run: |
         cd stable-diffusion.cpp
         mkdir build && cd build
-        # V100 = Volta 架构，CUDA Architecture = 70
-        # 限制 -j2 防止 OOM
-        cmake .. -DSD_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=70 -DCMAKE_BUILD_TYPE=Release
-        cmake --build . --config Release -j2
+        # L40 = Ada Lovelace 架构，CUDA Architecture = 89
+        cmake .. -DSD_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=89
+        cmake --build . --config Release -j$(nproc)
 
     - name: Package Artifacts
       run: |
@@ -68,15 +59,13 @@ jobs:
       uses: softprops/action-gh-release@v2
       with:
         files: dist/*
-        tag_name: sd-cpp-aistudio-v1.0.${{ github.run_number }}
-        name: "stable-diffusion.cpp CUDA Build for Baidu AIStudio (V100 / CUDA 12.6) v1.0.${{ github.run_number }}"
+        tag_name: sd-cpp-cnb-v1.0.${{ github.run_number }}
+        name: "stable-diffusion.cpp CUDA Build for Tencent CNB (L40 / CUDA 12.4) v1.0.${{ github.run_number }}"
         body: |
-          专为百度 AIStudio V100 环境编译的 stable-diffusion.cpp 二进制文件。
-          - 编译环境: Docker Ubuntu 22.04 + CUDA 12.6 (GLIBC 2.35)
-          - CUDA 版本: 12.6
-          - GPU 架构: Tesla V100-SXM2 (Compute Capability 70, Volta)
-          
-          注意：需要在 GLIBC ≥ 2.35 的环境运行（Ubuntu 22.04+）。
-          如果 AIStudio 实例是 Ubuntu 20.04，请使用 CUDA 11.8 版本。
+          专为腾讯 CNB L40 环境编译的 stable-diffusion.cpp 二进制文件。
+          - 编译环境: Ubuntu 22.04 (GitHub Actions)
+          - 目标系统: 腾讯 CNB Ubuntu 22.04
+          - CUDA 版本: 12.4
+          - GPU 架构: NVIDIA L40 (Compute Capability 89, Ada Lovelace)
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
