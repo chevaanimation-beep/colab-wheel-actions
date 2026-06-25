@@ -63,12 +63,13 @@ jobs:
           exit 1
         fi
         
-        # 配置CMake
+        # 配置CMake - 关键修改：使用静态链接
         cmake .. \
           -DGGML_CUDA=ON \
           -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.4/bin/nvcc \
           -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-          -DCMAKE_CUDA_ARCHITECTURES="89-real"
+          -DCMAKE_CUDA_ARCHITECTURES="89-real" \
+          -DBUILD_SHARED_LIBS=OFF
 
     - name: Build
       run: |
@@ -85,6 +86,14 @@ jobs:
         file ${{ env.QWEN_REPO_DIR }}/build/qwen-codec || true
         file ${{ env.QWEN_REPO_DIR }}/build/tts-server || true
         file ${{ env.QWEN_REPO_DIR }}/build/quantize || true
+        echo ""
+        echo "=== Checking shared libraries ==="
+        find ${{ env.QWEN_REPO_DIR }}/build -name "*.so*" -o -name "*.a" | head -20
+
+    - name: Check dynamic dependencies
+      run: |
+        echo "=== Dynamic dependencies of qwen-tts ==="
+        ldd ${{ env.QWEN_REPO_DIR }}/build/qwen-tts || true
 
     - name: Upload artifacts
       uses: actions/upload-artifact@v4
@@ -96,7 +105,7 @@ jobs:
           ${{ env.QWEN_REPO_DIR }}/build/tts-server
           ${{ env.QWEN_REPO_DIR }}/build/quantize
           ${{ env.QWEN_REPO_DIR }}/build/libqwen-core.a
-          ${{ env.QWEN_REPO_DIR }}/build/*.so
+          ${{ env.QWEN_REPO_DIR }}/build/*.so*
         retention-days: 30
         if-no-files-found: warn
 
@@ -110,7 +119,7 @@ jobs:
           tts-server \
           quantize \
           libqwen-core.a \
-          *.so 2>/dev/null || true
+          *.so* 2>/dev/null || true
 
     - name: Upload release archive
       if: github.event_name == 'push' && github.ref == 'refs/heads/master'
