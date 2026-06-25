@@ -1,0 +1,111 @@
+name: Build qwentts.cpp with CUDA 12.4 for cnb
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
+
+env:
+  BUILD_TYPE: Release
+  CUDA_VERSION: "12.4"
+
+jobs:
+  build-cuda:
+    runs-on: ubuntu-22.04
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake git
+
+    - name: Install CUDA 12.4
+      run: |
+        # 添加NVIDIA CUDA仓库
+        wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+        sudo dpkg -i cuda-keyring_1.1-1_all.deb
+        sudo apt-get update
+        
+        # 安装CUDA 12.4 toolkit (仅安装编译所需组件，不安装驱动)
+        sudo apt-get install -y cuda-toolkit-12-4
+        
+        # 设置环境变量
+        echo "/usr/local/cuda-12.4/bin" >> $GITHUB_PATH
+        echo "LD_LIBRARY_PATH=/usr/local/cuda-12.4/lib64:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
+        echo "CUDA_HOME=/usr/local/cuda-12.4" >> $GITHUB_ENV
+
+    - name: Verify CUDA installation
+      run: |
+        nvcc --version
+        ls -la /usr/local/cuda
+
+    - name: Configure CMake
+      run: |
+        rm -rf build
+        mkdir build
+        cd build
+        # 使用项目预设的CUDA架构配置
+        # 对于CUDA 12.4，默认架构为: 75-virtual;80-virtual;86-real;89-real
+        # 89-real 对应 Ada Lovelace 架构 (L40 GPU)
+        cmake .. \
+          -DGGML_CUDA=ON \
+          -DCMAKE_CUDA_COMPILER=/usr/local/cuda-12.4/bin/nvcc \
+          -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+          -DCMAKE_CUDA_ARCHITECTURES="89-real"
+
+    - name: Build
+      run: |
+        cd build
+        cmake --build . --config ${{ env.BUILD_TYPE }} -j $(nproc)
+
+    - name: Verify build artifacts
+      run: |
+        echo "=== Build artifacts ==="
+        ls -lh build/
+        echo ""
+        echo "=== Checking executables ==="
+        file build/qwen-tts || true
+        file build/qwen-codec || true
+        file build/tts-server || true
+        file build/quantize || true
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: qwentts-cuda12.4-ubuntu22.04
+        path: |
+          build/qwen-tts
+          build/qwen-codec
+          build/tts-server
+          build/quantize
+          build/libqwen-core.a
+          build/*.so
+        retention-days: 30
+        if-no-files-found: warn
+
+    - name: Create release archive
+      if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+      run: |
+        cd build
+        tar -czvf ../qwentts-cuda12.4-ubuntu22.04.tar.gz \
+          qwen-tts \
+          qwen-codec \
+          tts-server \
+          quantize \
+          libqwen-core.a \
+          *.so 2>/dev/null || true
+
+    - name: Upload release archive
+      if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+      uses: actions/upload-artifact@v4
+      with:
+        name: qwentts-cuda12.4-release-archive
+        path: qwentts-cuda12.4-ubuntu22.04.tar.gz
+        retention-days: 90
