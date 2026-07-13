@@ -28,7 +28,9 @@ env:
   RELEASE_TAG: ${{ github.event.inputs.version || '0.0.0' }}
   ZIP_BASE_URL: 'https://github.com/nagadomi/nunif/releases/download'
   PYTHON_VER: '3.12.10'
-  MINGIT_VER: 'v2.45.2.windows.1'
+  # tag 名称和压缩包文件名里的版本号格式不同，所以分开两个变量
+  MINGIT_TAG: 'v2.45.2.windows.1'
+  MINGIT_FILE_VER: '2.45.2'
 
 jobs:
   build:
@@ -156,7 +158,8 @@ jobs:
 
           # -------------------- 3) MinGit --------------------
           Write-Host "`n========== [3/6] MinGit =========="
-          $gitUrl = "https://github.com/git-for-windows/git/releases/download/${{ env.MINGIT_VER }}/MinGit-${{ env.MINGIT_VER }}-64-bit.zip"
+          # 正确 URL 示例: https://github.com/git-for-windows/git/releases/download/v2.45.2.windows.1/MinGit-2.45.2-64-bit.zip
+          $gitUrl = "https://github.com/git-for-windows/git/releases/download/${{ env.MINGIT_TAG }}/MinGit-${{ env.MINGIT_FILE_VER }}-64-bit.zip"
           $gitZip = Join-Path $tmpDir "mingit.zip"
 
           Remove-Item $mingitDir -Recurse -Force -ErrorAction SilentlyContinue
