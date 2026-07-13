@@ -123,10 +123,28 @@ jobs:
           Retry-Download -Url $pyUrl -OutFile $pyZip
           Expand-Archive -Path $pyZip -DestinationPath $pythonDir -Force
 
-          # 修改 ._pth 以启用 site-packages 和 nunif 导入
+          # 关键：保留默认 _pth 头部（python312.zip / .），仅在末尾追加。
+          # 默认 _pth 内容是:
+          #   python312.zip
+          #   .
+          #   # Uncomment to run site.main() automatically
+          #   # import site
+          # python312.zip 包含全部标准库，删掉它会导致 encodings 模块找不到、解释器崩溃。
           $pthFile = Join-Path $pythonDir "python312._pth"
-          "..\nunif"    | Out-File -FilePath $pthFile -Encoding utf8
-          "import site" | Out-File -FilePath $pthFile -Encoding utf8 -Append
+          if (Test-Path $pthFile) {
+            $content = Get-Content $pthFile -Raw
+            # 取消 import site 行的注释（如果还被注释），启用 site-packages 搜索
+            $content = $content -replace '(?m)^#\s*import\s+site\s*$', 'import site'
+            Set-Content -Path $pthFile -Value $content -Encoding utf8
+          } else {
+            # 异常情况：_pth 不存在则重建
+            @(
+              'python312.zip'
+              '.'
+              'import site'
+            ) | Set-Content -Path $pthFile -Encoding utf8
+          }
+          Write-Host "✔ _pth 文件已就绪 (保留 python312.zip, 启用 import site)"
 
           # -------------------- 2) pip --------------------
           Write-Host "`n========== [2/6] pip =========="
@@ -168,6 +186,10 @@ jobs:
           }
           if (-not $ok) { throw "git clone 失败（重试 5 次）" }
           Write-Host "✔ 仓库克隆完成"
+
+          # nunif 目录已就位，现在追加 ..\nunif 到 _pth，启用 nunif 作为顶层包导入
+          Add-Content -Path $pthFile -Value "..\nunif" -Encoding utf8
+          Write-Host "✔ 已追加 ..\nunif 到 _pth"
 
           # -------------------- 5) Python 依赖 --------------------
           Write-Host "`n========== [5/6] Python 依赖 =========="
