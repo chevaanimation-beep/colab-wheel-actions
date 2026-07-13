@@ -36,6 +36,9 @@ jobs:
   build:
     runs-on: windows-latest
     timeout-minutes: 180  # PyTorch 安装可能很慢
+    permissions:
+      contents: write  # 允许创建 Release 和上传资产
+
 
     steps:
       # ================================================================
@@ -357,12 +360,35 @@ jobs:
           Write-Host "   体积: $([math]::Round($size / 1MB, 1)) MB"
 
       # ================================================================
-      # 5. 上传到 Actions Artifacts
+      # 5. 上传到 GitHub Release（公开下载，无需登录）
       # ================================================================
-      - name: 上传 Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.ARCHIVE_NAME }}
-          path: ${{ env.ARCHIVE_PATH }}
-          retention-days: 7
-          compression-level: 0  # 包已压缩，不重复压缩
+      - name: 创建 / 更新 GitHub Release
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "nunif-windows-portable"
+          $archivePath = "$env:ARCHIVE_PATH"
+          $archiveName = "$env:ARCHIVE_NAME"
+          $repo = "${{ github.repository }}"
+
+          # 删除旧的同名 release 和 tag（如果存在），确保下载链接固定
+          Write-Host "尝试删除旧 release / tag: $tag ..."
+          gh release delete $tag --yes --repo $repo 2>&1 | Out-Null
+          gh api --method DELETE "repos/$repo/git/refs/tags/$tag" 2>&1 | Out-Null
+          Write-Host "✔ 旧 release/tag 已清理（或不存在）"
+
+          # 创建新 release 并直接上传资产
+          Write-Host "创建 Release 并上传: $archiveName ..."
+          gh release create $tag `
+            --repo $repo `
+            --title "iW3 / waifu2x Windows 便携版" `
+            --notes "自动构建的 nunif Windows 便携版。解压后运行 iw3-gui.bat 即可启动 iW3。`n`n文件名: $archiveName" `
+            $archivePath
+
+          if ($LASTEXITCODE -ne 0) { throw "Release 创建失败" }
+
+          Write-Host "✔ Release 创建成功"
+          Write-Host "下载链接: https://github.com/$repo/releases/tag/$tag"
+          Write-Host "直接下载: https://github.com/$repo/releases/download/$tag/$archiveName"
+
