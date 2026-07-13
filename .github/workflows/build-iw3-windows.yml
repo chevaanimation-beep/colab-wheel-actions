@@ -23,9 +23,6 @@ on:
         description: 'nunif-windows 版本标签（如 0.0.0）'
         required: false
         default: '0.0.0'
-  schedule:
-    # 每周日 20:00 UTC = 北京时间周日凌晨 4:00
-    - cron: '0 20 * * 6'
 
 env:
   RELEASE_TAG: ${{ github.event.inputs.version || '0.0.0' }}
