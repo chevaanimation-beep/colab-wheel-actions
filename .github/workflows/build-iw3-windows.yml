@@ -128,8 +128,8 @@ jobs:
 
           # 修改 ._pth 以启用 site-packages 和 nunif 导入
           $pthFile = Join-Path $pythonDir "python312._pth"
-          "..\nunif"  | Out-File -FilePath $pthFile -Encoding utf8
-          "import site"  | Out-File -FilePath $pthFile -Encoding utf8 -Append
+          "..\nunif"    | Out-File -FilePath $pthFile -Encoding utf8
+          "import site" | Out-File -FilePath $pthFile -Encoding utf8 -Append
 
           # -------------------- 2) pip --------------------
           Write-Host "`n========== [2/6] pip =========="
@@ -258,47 +258,51 @@ jobs:
           Write-Host "============================================"
 
       # ================================================================
-      # 3. 注入长路径修复 .reg + 自述文件
+      # 3. 注入辅助文件（用 [System.IO.File]::WriteAllText + 单引号字符串
+      #    规避 PowerShell heredoc + YAML 解析的多重陷阱）
       # ================================================================
       - name: 注入辅助文件
         shell: pwsh
         run: |
-          # enable_long_path.reg —— 解决 Windows 260 字符路径限制
-          @'
-Windows Registry Editor Version 5.00
+          $regPath = "$env:INSTALLER_DIR\enable_long_path.reg"
+          $regLines = @(
+              'Windows Registry Editor Version 5.00'
+              ''
+              '; 启用 Windows 长路径支持（去除 260 字符限制）'
+              '; 使用方法：右键 -> 合并，然后重启电脑'
+              '[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\FileSystem]'
+              '"LongPathsEnabled"=dword:00000001'
+          )
+          [System.IO.File]::WriteAllLines($regPath, $regLines, [System.Text.Encoding]::ASCII)
+          Write-Host "✔ enable_long_path.reg 已生成"
 
-; 启用 Windows 长路径支持（去除 260 字符限制）
-; 使用方法：右键 → 合并，然后重启电脑
-[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\FileSystem]
-"LongPathsEnabled"=dword:00000001
-'@ | Out-File -FilePath "$env:INSTALLER_DIR\enable_long_path.reg" -Encoding ascii
-
-          # README.txt —— 使用说明
-          @'
-=====================================
-   nunif Windows 便携版 (iW3 / waifu2x)
-=====================================
-
-【启动方式】
-  iw3-gui.bat        —— 启动 iW3 (2D→3D 转换)
-  waifu2x-gui.bat    —— 启动 waifu2x (图片放大/降噪)
-
-【首次使用】
-  如果遇到 Long Path 错误：
-  1. 以管理员身份运行 enable_long_path.reg
-  2. 重启电脑
-
-【注意事项】
-  - 本包无需安装，解压即用
-  - 首次启动可能需要较长时间（加载模型）
-  - Python 解释器位于 python\python.exe
-  - 代码位于 nunif\ 目录
-
-【更新】
-  运行 update.bat 可更新代码至最新版本
-'@ | Out-File -FilePath "$env:INSTALLER_DIR\README.txt" -Encoding utf8
-
-          Write-Host "✔ 辅助文件已生成"
+          $readmePath = "$env:INSTALLER_DIR\README.txt"
+          $readmeLines = @(
+              '====================================='
+              '   nunif Windows 便携版 (iW3 / waifu2x)'
+              '====================================='
+              ''
+              '【启动方式】'
+              '  iw3-gui.bat        -- 启动 iW3 (2D->3D 转换)'
+              '  waifu2x-gui.bat    -- 启动 waifu2x (图片放大/降噪)'
+              ''
+              '【首次使用】'
+              '  如果遇到 Long Path 错误：'
+              '  1. 以管理员身份运行 enable_long_path.reg'
+              '  2. 重启电脑'
+              ''
+              '【注意事项】'
+              '  - 本包无需安装，解压即用'
+              '  - 首次启动可能需要较长时间（加载模型）'
+              '  - Python 解释器位于 python\python.exe'
+              '  - 代码位于 nunif\ 目录'
+              ''
+              '【更新】'
+              '  运行 update.bat 可更新代码至最新版本'
+          )
+          $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllLines($readmePath, $readmeLines, $utf8NoBom)
+          Write-Host "✔ README.txt 已生成"
 
       # ================================================================
       # 4. 压缩打包
@@ -317,10 +321,14 @@ Windows Registry Editor Version 5.00
           $7z = "C:\Program Files\7-Zip\7z.exe"
           $srcDir = "$env:INSTALLER_DIR"
 
-          Write-Host "正在打包 ... (可能耗时较长)"
-          & $7z a -mx=5 -tzip -r $outputPath "$srcDir\*"
-
-          if ($LASTEXITCODE -ne 0) { throw "7-Zip 打包失败" }
+          if (-not (Test-Path $7z)) {
+            Write-Host "未找到 7-Zip,使用 PowerShell Compress-Archive"
+            Compress-Archive -Path "$srcDir\*" -DestinationPath $outputPath -CompressionLevel Optimal -Force
+          } else {
+            Write-Host "正在打包 ... (可能耗时较长)"
+            & $7z a -mx=5 -tzip -r $outputPath "$srcDir\*"
+            if ($LASTEXITCODE -ne 0) { throw "7-Zip 打包失败" }
+          }
 
           $size = (Get-Item $outputPath).Length
           Write-Host "✔ 打包完成: $archiveName"
