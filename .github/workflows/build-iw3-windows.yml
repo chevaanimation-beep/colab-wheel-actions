@@ -1,0 +1,338 @@
+# =============================================================================
+# 构建 iW3 / waifu2x Windows 便携版 (nunif)
+# =============================================================================
+# 用途:
+#   在 GitHub Actions 云端主机上完整安装 nunif-windows (含 Python、pip、
+#   PyTorch、所有依赖和预训练模型)，打包为可直接下载解压使用的便携版 ZIP。
+#
+# 触发方式:
+#   1. 手动触发 (workflow_dispatch): 在 Actions 页面点击 "Run workflow"
+#   2. 定时触发 (schedule): 每周日自动重建
+#
+# 下载产物:
+#   构建完成后，在 Action 运行结果的 "Artifacts" 区下载 ZIP 包。
+#   下载后解压到本地，运行 iw3-gui.bat 即可启动 iW3。
+# =============================================================================
+
+name: 构建 iW3/waifu2x Windows 便携版
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'nunif-windows 版本标签（如 0.0.0）'
+        required: false
+        default: '0.0.0'
+  schedule:
+    # 每周日 20:00 UTC = 北京时间周日凌晨 4:00
+    - cron: '0 20 * * 6'
+
+env:
+  RELEASE_TAG: ${{ github.event.inputs.version || '0.0.0' }}
+  ZIP_BASE_URL: 'https://github.com/nagadomi/nunif/releases/download'
+  PYTHON_VER: '3.12.10'
+  MINGIT_VER: 'v2.45.2.windows.1'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 180  # PyTorch 安装可能很慢
+
+    steps:
+      # ================================================================
+      # 1. 下载官方在线安装包 (nunif-windows.zip)
+      # ================================================================
+      - name: 下载 nunif-windows.zip（带指数退避重试）
+        shell: pwsh
+        run: |
+          $url    = "${{ env.ZIP_BASE_URL }}/${{ env.RELEASE_TAG }}/nunif-windows.zip"
+          $output = "$env:RUNNER_TEMP\nunif-windows.zip"
+          Write-Host "下载: $url"
+
+          $maxRetry = 8
+          for ($i = 1; $i -le $maxRetry; $i++) {
+            try {
+              Invoke-WebRequest -Uri $url -OutFile $output -UseBasicParsing `
+                -TimeoutSec 300 -ErrorAction Stop
+              Write-Host "✔ 下载成功"
+              break
+            } catch {
+              if ($i -eq $maxRetry) { throw "下载失败（已重试 $i 次）" }
+              $wait = [Math]::Min(60, $i * 10)
+              Write-Host "✘ 第 $i 次失败，${wait}s 后重试..."
+              Start-Sleep -Seconds $wait
+            }
+          }
+
+      - name: 解压安装包
+        shell: pwsh
+        run: |
+          $zipPath    = "$env:RUNNER_TEMP\nunif-windows.zip"
+          $extractDir = "$env:RUNNER_TEMP\nunif-installer"
+          Remove-Item -Path $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+          Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+
+          # 如果解压后只有一个子目录，使用它作为根目录
+          $sub = Get-ChildItem -Path $extractDir -Directory
+          $installerDir = if ($sub.Count -eq 1) { $sub[0].FullName } else { $extractDir }
+          Write-Host "安装根目录: $installerDir"
+
+          # 保存到 GITHUB_ENV 供后续步骤使用
+          Add-Content -Path $env:GITHUB_ENV -Value "INSTALLER_DIR=$installerDir"
+
+      # ================================================================
+      # 2. 核心安装（用 PowerShell 替代 install.bat，避免 BITS 问题）
+      #    每个下载步骤都内置重试逻辑
+      # ================================================================
+      - name: 执行安装（带重试，CI 优化）
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          # -------------------- 目录定义 --------------------
+          $rootDir   = "$env:INSTALLER_DIR"
+          $pythonDir = Join-Path $rootDir "python"
+          $mingitDir = Join-Path $rootDir "git"
+          $nunifDir  = Join-Path $rootDir "nunif"
+          $tmpDir    = Join-Path $rootDir "tmp"
+          New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+
+          # -------------------- 重试下载函数 --------------------
+          function Retry-Download {
+            param([string]$Url, [string]$OutFile, [int]$MaxRetries = 8, [int]$TimeoutSec = 300)
+            for ($i = 1; $i -le $MaxRetries; $i++) {
+              try {
+                Write-Host "  [$i/$MaxRetries] $Url"
+                Invoke-WebRequest -Uri $Url -OutFile $OutFile -UseBasicParsing `
+                  -TimeoutSec $TimeoutSec -ErrorAction Stop
+                Write-Host "  ✔ 完成"
+                return
+              } catch {
+                if ($i -eq $MaxRetries) { throw "下载失败（$i 次均失败）: $Url" }
+                $wait = [Math]::Min(60, $i * 10)
+                Write-Host "  ✘ 失败，${wait}s 后重试..."
+                Start-Sleep -Seconds $wait
+              }
+            }
+          }
+
+          # -------------------- 1) Python 3.12 Embeddable --------------------
+          Write-Host "`n========== [1/6] Python ${{ env.PYTHON_VER }} Embeddable =========="
+          $pyUrl = "https://www.python.org/ftp/python/${{ env.PYTHON_VER }}/python-${{ env.PYTHON_VER }}-embed-amd64.zip"
+          $pyZip = Join-Path $tmpDir "python.zip"
+          $getPipUrl = "https://bootstrap.pypa.io/get-pip.py"
+
+          Remove-Item $pythonDir -Recurse -Force -ErrorAction SilentlyContinue
+          Retry-Download -Url $pyUrl -OutFile $pyZip
+          Expand-Archive -Path $pyZip -DestinationPath $pythonDir -Force
+
+          # 修改 ._pth 以启用 site-packages 和 nunif 导入
+          $pthFile = Join-Path $pythonDir "python312._pth"
+          "..\nunif"  | Out-File -FilePath $pthFile -Encoding utf8
+          "import site"  | Out-File -FilePath $pthFile -Encoding utf8 -Append
+
+          # -------------------- 2) pip --------------------
+          Write-Host "`n========== [2/6] pip =========="
+          $pipScript = Join-Path $tmpDir "get-pip.py"
+          Retry-Download -Url $getPipUrl -OutFile $pipScript
+          & "$pythonDir\python.exe" $pipScript
+          if ($LASTEXITCODE -ne 0) { throw "pip 安装失败" }
+          Write-Host "✔ pip 就绪"
+
+          # -------------------- 3) MinGit --------------------
+          Write-Host "`n========== [3/6] MinGit =========="
+          $gitUrl = "https://github.com/git-for-windows/git/releases/download/${{ env.MINGIT_VER }}/MinGit-${{ env.MINGIT_VER }}-64-bit.zip"
+          $gitZip = Join-Path $tmpDir "mingit.zip"
+
+          Remove-Item $mingitDir -Recurse -Force -ErrorAction SilentlyContinue
+          Retry-Download -Url $gitUrl -OutFile $gitZip
+          Expand-Archive -Path $gitZip -DestinationPath $mingitDir -Force
+
+          # 将 Python 和 Git 加入当前会话 PATH
+          $env:Path = "C:\Windows\system32;C:\Windows;C:\WINDOWS\System32\WindowsPowerShell\v1.0;" +
+                      "$pythonDir;$pythonDir\Scripts;$mingitDir\cmd;$env:Path"
+          $env:GIT_CONFIG_NOSYSTEM = "1"
+
+          # -------------------- 4) 克隆 nunif 仓库 --------------------
+          Write-Host "`n========== [4/6] 克隆 nunif 仓库 =========="
+          $gitExe = Join-Path $mingitDir "cmd\git.exe"
+          Remove-Item $nunifDir -Recurse -Force -ErrorAction SilentlyContinue
+
+          $ok = $false
+          for ($i = 1; $i -le 5; $i++) {
+            try {
+              Write-Host "  [$i/5] git clone --depth 1 ..."
+              & $gitExe clone --depth 1 https://github.com/nagadomi/nunif.git $nunifDir 2>&1
+              if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+            } catch { Write-Host "  ✘ $_" }
+            $wait = [Math]::Min(30, $i * 10)
+            Write-Host "  等待 ${wait}s 后重试 ..."
+            Start-Sleep -Seconds $wait
+          }
+          if (-not $ok) { throw "git clone 失败（重试 5 次）" }
+          Write-Host "✔ 仓库克隆完成"
+
+          # -------------------- 5) Python 依赖 --------------------
+          Write-Host "`n========== [5/6] Python 依赖 =========="
+          $pip = "$pythonDir\Scripts\pip.exe"
+
+          # 升级 pip
+          & $pip install --no-cache-dir --upgrade pip
+          if ($LASTEXITCODE -ne 0) { throw "pip 升级失败" }
+
+          $reqFiles = @(
+            "requirements-torch.txt",
+            "requirements.txt",
+            "requirements-gui.txt"
+          )
+          foreach ($req in $reqFiles) {
+            $reqPath = Join-Path $nunifDir $req
+            if (-not (Test-Path $reqPath)) { Write-Host "⚠ 跳过 $req（文件不存在）"; continue }
+
+            Write-Host "安装 $req ..."
+            $installed = $false
+            for ($i = 1; $i -le 5; $i++) {
+              # PyTorch 安装超时设长一些
+              & $pip install --no-cache-dir --upgrade --timeout 300 -r $reqPath 2>&1
+              if ($LASTEXITCODE -eq 0) { $installed = $true; break }
+              if ($i -eq 5) { throw "安装失败: $req（重试 5 次）" }
+              $wait = [Math]::Min(60, $i * 15)
+              Write-Host "  ✘ 失败，${wait}s 后重试 ..."
+              Start-Sleep -Seconds $wait
+            }
+            Write-Host "  ✔ $req 安装成功"
+          }
+
+          # 清理 pip 缓存（节省打包体积）
+          & $pip cache purge 2>&1 | Out-Null
+
+          # -------------------- 6) 模型下载 + 预热 --------------------
+          Write-Host "`n========== [6/6] 模型下载 & 预热 =========="
+          $python = "$pythonDir\python.exe"
+
+          $modelTasks = @(
+            @{ Name = "waifu2x";  Cmd = "python -m waifu2x.download_models" }
+            @{ Name = "iw3";      Cmd = "python -m iw3.download_models" }
+          )
+          foreach ($task in $modelTasks) {
+            Write-Host "下载 $($task.Name) 模型 ..."
+            try {
+              Push-Location $nunifDir
+              Invoke-Expression $task.Cmd 2>&1
+              if ($LASTEXITCODE -ne 0) { throw "返回码 $LASTEXITCODE" }
+              Pop-Location
+              Write-Host "✔ $($task.Name) 模型下载完成"
+            } catch {
+              Pop-Location
+              Write-Host "⚠ $($task.Name) 模型下载失败（非致命）: $_"
+            }
+          }
+
+          # 预热（生成 pyc 缓存）
+          foreach ($module in @("iw3.gui", "waifu2x.gui")) {
+            Write-Host "预热 $module ..."
+            try {
+              Push-Location $nunifDir
+              & $python -m $module --help 2>&1 | Out-Null
+              Pop-Location
+            } catch {
+              Pop-Location
+              Write-Host "⚠ 预热 $module 失败（非致命）: $_"
+            }
+          }
+
+          # -------------------- 清理 --------------------
+          Write-Host "`n清理临时文件 ..."
+          Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item (Join-Path $nunifDir ".git") -Recurse -Force -ErrorAction SilentlyContinue
+
+          # 删除 __pycache__
+          Get-ChildItem -Path $rootDir -Recurse -Directory -Filter "__pycache__" -ErrorAction SilentlyContinue |
+            ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+
+          # 统计最终体积
+          $size = (Get-ChildItem -Path $rootDir -Recurse | Measure-Object -Property Length -Sum).Sum
+          Write-Host "`n============================================"
+          Write-Host "✔ 安装全部完成！"
+          Write-Host "   安装目录体积: $([math]::Round($size / 1MB, 1)) MB"
+          Write-Host "============================================"
+
+      # ================================================================
+      # 3. 注入长路径修复 .reg + 自述文件
+      # ================================================================
+      - name: 注入辅助文件
+        shell: pwsh
+        run: |
+          # enable_long_path.reg —— 解决 Windows 260 字符路径限制
+          @'
+Windows Registry Editor Version 5.00
+
+; 启用 Windows 长路径支持（去除 260 字符限制）
+; 使用方法：右键 → 合并，然后重启电脑
+[HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\FileSystem]
+"LongPathsEnabled"=dword:00000001
+'@ | Out-File -FilePath "$env:INSTALLER_DIR\enable_long_path.reg" -Encoding ascii
+
+          # README.txt —— 使用说明
+          @'
+=====================================
+   nunif Windows 便携版 (iW3 / waifu2x)
+=====================================
+
+【启动方式】
+  iw3-gui.bat        —— 启动 iW3 (2D→3D 转换)
+  waifu2x-gui.bat    —— 启动 waifu2x (图片放大/降噪)
+
+【首次使用】
+  如果遇到 Long Path 错误：
+  1. 以管理员身份运行 enable_long_path.reg
+  2. 重启电脑
+
+【注意事项】
+  - 本包无需安装，解压即用
+  - 首次启动可能需要较长时间（加载模型）
+  - Python 解释器位于 python\python.exe
+  - 代码位于 nunif\ 目录
+
+【更新】
+  运行 update.bat 可更新代码至最新版本
+'@ | Out-File -FilePath "$env:INSTALLER_DIR\README.txt" -Encoding utf8
+
+          Write-Host "✔ 辅助文件已生成"
+
+      # ================================================================
+      # 4. 压缩打包
+      # ================================================================
+      - name: 打包为 ZIP（使用 7-Zip，支持大文件）
+        shell: pwsh
+        run: |
+          $date = Get-Date -Format "yyyyMMdd"
+          $archiveName = "nunif-windows-portable-${{ env.RELEASE_TAG }}-$date.zip"
+          $outputPath = "$env:RUNNER_TEMP\$archiveName"
+
+          Add-Content -Path $env:GITHUB_ENV -Value "ARCHIVE_NAME=$archiveName"
+          Add-Content -Path $env:GITHUB_ENV -Value "ARCHIVE_PATH=$outputPath"
+
+          # 7-Zip 比 Compress-Archive 更快，且无 2GB 单文件限制
+          $7z = "C:\Program Files\7-Zip\7z.exe"
+          $srcDir = "$env:INSTALLER_DIR"
+
+          Write-Host "正在打包 ... (可能耗时较长)"
+          & $7z a -mx=5 -tzip -r $outputPath "$srcDir\*"
+
+          if ($LASTEXITCODE -ne 0) { throw "7-Zip 打包失败" }
+
+          $size = (Get-Item $outputPath).Length
+          Write-Host "✔ 打包完成: $archiveName"
+          Write-Host "   体积: $([math]::Round($size / 1MB, 1)) MB"
+
+      # ================================================================
+      # 5. 上传到 Actions Artifacts
+      # ================================================================
+      - name: 上传 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARCHIVE_NAME }}
+          path: ${{ env.ARCHIVE_PATH }}
+          retention-days: 7
+          compression-level: 0  # 包已压缩，不重复压缩
