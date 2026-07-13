@@ -330,34 +330,42 @@ jobs:
           Write-Host "✔ README.txt 已生成"
 
       # ================================================================
-      # 4. 压缩打包
+      # 4. 压缩打包（分卷，避免 GitHub Release 2GB 单文件限制）
       # ================================================================
-      - name: 打包为 ZIP（使用 7-Zip，支持大文件）
+      - name: 打包为 ZIP 分卷
         shell: pwsh
         run: |
           $date = Get-Date -Format "yyyyMMdd"
-          $archiveName = "nunif-windows-portable-${{ env.RELEASE_TAG }}-$date.zip"
-          $outputPath = "$env:RUNNER_TEMP\$archiveName"
+          $archiveBase = "nunif-windows-portable-${{ env.RELEASE_TAG }}-$date"
+          $archivePath = "$env:RUNNER_TEMP\$archiveBase.zip"
+          # 分卷名: archive.zip.001, archive.zip.002, ...
+          $splitPattern = "$env:RUNNER_TEMP\$archiveBase.zip.*"
 
-          Add-Content -Path $env:GITHUB_ENV -Value "ARCHIVE_NAME=$archiveName"
-          Add-Content -Path $env:GITHUB_ENV -Value "ARCHIVE_PATH=$outputPath"
+          Add-Content -Path $env:GITHUB_ENV -Value "ARCHIVE_BASE=$archiveBase"
+          Add-Content -Path $env:GITHUB_ENV -Value "ARCHIVE_PATH=$archivePath"
+          Add-Content -Path $env:GITHUB_ENV -Value "SPLIT_PATTERN=$splitPattern"
 
-          # 7-Zip 比 Compress-Archive 更快，且无 2GB 单文件限制
           $7z = "C:\Program Files\7-Zip\7z.exe"
           $srcDir = "$env:INSTALLER_DIR"
 
+          # 先清理可能存在的旧分卷
+          Remove-Item -Path $splitPattern -Force -ErrorAction SilentlyContinue
+
           if (-not (Test-Path $7z)) {
-            Write-Host "未找到 7-Zip,使用 PowerShell Compress-Archive"
-            Compress-Archive -Path "$srcDir\*" -DestinationPath $outputPath -CompressionLevel Optimal -Force
+            Write-Host "未找到 7-Zip, 使用 PowerShell Compress-Archive（不分卷）"
+            Compress-Archive -Path "$srcDir\*" -DestinationPath $archivePath -CompressionLevel Optimal -Force
+            Add-Content -Path $env:GITHUB_ENV -Value "USE_SPLIT=false"
           } else {
-            Write-Host "正在打包 ... (可能耗时较长)"
-            & $7z a -mx=5 -tzip -r $outputPath "$srcDir\*"
+            Write-Host "正在分卷打包 ... (每个卷 1.9GB, 避免 GitHub 2GB 限制)"
+            # -v1900m = 1900 MB 每卷
+            & $7z a -v1900m -mx=5 -tzip -r $archivePath "$srcDir\*"
             if ($LASTEXITCODE -ne 0) { throw "7-Zip 打包失败" }
+            Add-Content -Path $env:GITHUB_ENV -Value "USE_SPLIT=true"
+            $parts = Get-ChildItem -Path "$env:RUNNER_TEMP\$archiveBase.zip.*" | Sort-Object Name
+            Write-Host "✔ 打包完成, 共 $($parts.Count) 个分卷:"
+            $parts | ForEach-Object { Write-Host "   $($_.Name) - $([math]::Round($_.Length / 1MB, 1)) MB" }
           }
 
-          $size = (Get-Item $outputPath).Length
-          Write-Host "✔ 打包完成: $archiveName"
-          Write-Host "   体积: $([math]::Round($size / 1MB, 1)) MB"
 
       # ================================================================
       # 5. 上传到 GitHub Release（公开下载，无需登录）
@@ -369,8 +377,9 @@ jobs:
         run: |
           $tag = "nunif-windows-portable"
           $archivePath = "$env:ARCHIVE_PATH"
-          $archiveName = "$env:ARCHIVE_NAME"
+          $archiveBase = "$env:ARCHIVE_BASE"
           $repo = "${{ github.repository }}"
+          $useSplit = "$env:USE_SPLIT" -eq "true"
 
           # 删除旧的同名 release 和 tag（如果存在），确保下载链接固定
           Write-Host "尝试删除旧 release / tag: $tag ..."
@@ -378,17 +387,30 @@ jobs:
           gh api --method DELETE "repos/$repo/git/refs/tags/$tag" 2>&1 | Out-Null
           Write-Host "✔ 旧 release/tag 已清理（或不存在）"
 
-          # 创建新 release 并直接上传资产
-          Write-Host "创建 Release 并上传: $archiveName ..."
+          # 收集要上传的文件
+          if ($useSplit) {
+            $assets = Get-ChildItem -Path "$env:RUNNER_TEMP\$archiveBase.zip.*" | Sort-Object Name
+            Write-Host "上传 $($assets.Count) 个分卷到 Release ..."
+          } else {
+            $assets = @(Get-Item -Path $archivePath)
+            Write-Host "上传单个文件到 Release ..."
+          }
+
+          $assetPaths = $assets | ForEach-Object { $_.FullName }
+
+          # 创建新 release 并上传资产
           gh release create $tag `
             --repo $repo `
             --title "iW3 / waifu2x Windows 便携版" `
-            --notes "自动构建的 nunif Windows 便携版。解压后运行 iw3-gui.bat 即可启动 iW3。`n`n文件名: $archiveName" `
-            $archivePath
+            --notes "自动构建的 nunif Windows 便携版。`n下载所有 .zip.001 / .zip.002 ... 分卷后，放在同一文件夹，解压第一个即可。`n`n基础文件名: $archiveBase.zip" `
+            @assetPaths
 
           if ($LASTEXITCODE -ne 0) { throw "Release 创建失败" }
 
           Write-Host "✔ Release 创建成功"
-          Write-Host "下载链接: https://github.com/$repo/releases/tag/$tag"
-          Write-Host "直接下载: https://github.com/$repo/releases/download/$tag/$archiveName"
+          Write-Host "下载页面: https://github.com/$repo/releases/tag/$tag"
+          foreach ($a in $assets) {
+            Write-Host "分卷: https://github.com/$repo/releases/download/$tag/$($a.Name)"
+          }
+
 
