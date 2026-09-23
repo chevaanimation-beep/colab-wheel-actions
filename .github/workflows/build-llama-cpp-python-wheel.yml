@@ -5,17 +5,25 @@ on:
 
 jobs:
   build:
-    # 🟢 核心修复：强行指定 Ubuntu 22.04，以匹配 Colab 的 GLIBC 2.35 底座
     runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        # 同时编译 3.13（匹配当前 Colab）与 3.12（备用）
+        python-version: ['3.13', '3.12']
 
     steps:
-    - name: Checkout Code
+    # 核心：直接拉取 upstream 官方仓库最新代码，并必须递归拉取 llama.cpp 子模块
+    - name: Checkout Latest llama-cpp-python
       uses: actions/checkout@v4
+      with:
+        repository: abetlen/llama-cpp-python
+        submodules: recursive
+        fetch-depth: 1
 
-    - name: Setup Python
+    - name: Setup Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:
-        python-version: '3.12'
+        python-version: ${{ matrix.python-version }}
 
     - name: Install CUDA Toolkit
       uses: Jimver/cuda-toolkit@v0.2.21
@@ -23,7 +31,7 @@ jobs:
       with:
         cuda: '12.8.0'
         method: 'network'
-        sub-packages: '["toolkit", "nvcc"]' # 修正这里
+        sub-packages: '["toolkit", "nvcc"]'
 
     - name: Verify NVCC
       run: |
@@ -32,21 +40,37 @@ jobs:
     - name: Install Build Dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install wheel setuptools scikit-build-core[pyproject]
+        pip install wheel setuptools scikit-build-core[pyproject] cmake ninja
 
     - name: Build Wheel with CUDA
       env:
         GGML_CUDA: 'on'
-        # 优化：针对 Colab 的 T4 显卡（75架构）进行定向编译，速度更快
         CMAKE_ARGS: '-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=75'
       run: |
-        pip wheel llama-cpp-python --wheel-dir=dist --no-deps
+        # 直接使用本地检出的最新源码构建 wheel
+        pip wheel . --wheel-dir=dist --no-deps
+
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: wheels-py${{ matrix.python-version }}
+        path: dist/*.whl
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download all wheels
+      uses: actions/download-artifact@v4
+      with:
+        path: all-dist
+        merge-multiple: true
 
     - name: Create GitHub Release and Upload Wheel
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: v1.0.${{ github.run_number }} # 每次编译自动生成一个版本号
+        tag_name: v1.0.${{ github.run_number }}
         name: Release CUDA Wheel v1.0.${{ github.run_number }}
-        files: dist/*.whl
+        files: all-dist/*.whl
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # GitHub 自动提供的权限，无需配置
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
