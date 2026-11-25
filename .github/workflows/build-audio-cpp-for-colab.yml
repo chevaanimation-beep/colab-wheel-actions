@@ -1,14 +1,23 @@
-name: Build audio.cpp for Colab (T4 CUDA)
+name: Build audio.cpp for Colab (T4 CUDA / CPU)
 
 on:
   workflow_dispatch:
     inputs:
+      backend:
+        description: 'Build backend (cuda = Colab T4 GPU, cpu = pure CPU, both = build both)'
+        required: false
+        type: choice
+        options:
+          - cuda
+          - cpu
+          - both
+        default: 'cuda'
       ref:
         description: 'audio.cpp branch or tag to build (leave empty for latest default branch)'
         required: false
         default: ''
       cuda_architectures:
-        description: 'CUDA architectures (75 = Colab T4)'
+        description: 'CUDA architectures (75 = Colab T4, used when backend is cuda or both)'
         required: false
         default: '75'
 
@@ -16,10 +25,14 @@ permissions:
   contents: write
 
 jobs:
-  build-and-release:
-    name: Build audio.cpp (Ubuntu 22.04 + CUDA 12.8 + T4 sm_75)
+  build-cuda:
+    name: Build audio.cpp CUDA (Ubuntu 22.04 + CUDA 12.8 + T4 sm_75)
+    if: ${{ github.event.inputs.backend == 'cuda' || github.event.inputs.backend == 'both' || github.event.inputs.backend == '' }}
     runs-on: ubuntu-latest
     container: nvidia/cuda:12.8.1-devel-ubuntu22.04
+
+    outputs:
+      sha: ${{ steps.clone.outputs.sha }}
 
     env:
       CC: gcc-13
@@ -36,6 +49,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gcc-13 g++-13 cmake ninja-build libssl-dev
 
       - name: Clone Latest audio.cpp Repository
+        id: clone
         run: |
           if [ -n "${{ github.event.inputs.ref }}" ]; then
             git clone --depth 1 --recursive --branch "${{ github.event.inputs.ref }}" https://github.com/0xShug0/audio.cpp.git audio.cpp
@@ -44,6 +58,7 @@ jobs:
           fi
           cd audio.cpp
           AUDIOCPP_SHA=$(git rev-parse --short HEAD)
+          echo "sha=${AUDIOCPP_SHA}" >> "$GITHUB_OUTPUT"
           echo "AUDIOCPP_SHA=${AUDIOCPP_SHA}" >> "$GITHUB_ENV"
           echo "Cloned audio.cpp at commit: ${AUDIOCPP_SHA}"
 
@@ -107,22 +122,149 @@ jobs:
           path: audio-cpp-colab-t4.tar.gz
           if-no-files-found: error
 
+  build-cpu:
+    name: Build audio.cpp Pure CPU (Ubuntu 22.04 x64 Portable)
+    if: ${{ github.event.inputs.backend == 'cpu' || github.event.inputs.backend == 'both' }}
+    runs-on: ubuntu-22.04
+
+    outputs:
+      sha: ${{ steps.clone.outputs.sha }}
+
+    env:
+      CC: gcc-13
+      CXX: g++-13
+
+    steps:
+      - name: Install Build Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq software-properties-common ca-certificates git
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq gcc-13 g++-13 cmake ninja-build libssl-dev
+
+      - name: Clone Latest audio.cpp Repository
+        id: clone
+        run: |
+          if [ -n "${{ github.event.inputs.ref }}" ]; then
+            git clone --depth 1 --recursive --branch "${{ github.event.inputs.ref }}" https://github.com/0xShug0/audio.cpp.git audio.cpp
+          else
+            git clone --depth 1 --recursive https://github.com/0xShug0/audio.cpp.git audio.cpp
+          fi
+          cd audio.cpp
+          AUDIOCPP_SHA=$(git rev-parse --short HEAD)
+          echo "sha=${AUDIOCPP_SHA}" >> "$GITHUB_OUTPUT"
+          echo "AUDIOCPP_SHA=${AUDIOCPP_SHA}" >> "$GITHUB_ENV"
+          echo "Cloned audio.cpp at commit: ${AUDIOCPP_SHA}"
+
+      - name: Configure audio.cpp (Pure CPU Portable)
+        working-directory: audio.cpp
+        run: |
+          cmake -S . -B build/colab-cpu -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DCMAKE_EXE_LINKER_FLAGS='-static-libstdc++ -static-libgcc' \
+            -DCMAKE_SHARED_LINKER_FLAGS='-static-libstdc++ -static-libgcc' \
+            -DENGINE_ENABLE_CUDA=OFF \
+            -DENGINE_ENABLE_VULKAN=OFF \
+            -DENGINE_ENABLE_NATIVE_CPU=OFF \
+            -DENGINE_ENABLE_CPU_ALL_VARIANTS=ON \
+            -DENGINE_BUILD_TESTS=OFF \
+            -DAUDIOCPP_VERSION="${AUDIOCPP_SHA}" \
+            -DAUDIOCPP_DEPLOYMENT_BUILD=ON \
+            -DAUDIOCPP_BUILD_NATIVE_MODEL_MANAGER=ON \
+            -DAUDIOCPP_USE_SYSTEM_OPENSSL=ON \
+            -DENGINE_ENABLE_LLAMAFILE=ON
+
+      - name: Build Binaries
+        working-directory: audio.cpp
+        run: |
+          cmake --build build/colab-cpu --parallel "$(nproc)" --target audiocpp_cli audiocpp_server audiocpp_gguf
+
+      - name: Verify Portable Executables
+        working-directory: audio.cpp
+        run: |
+          export LD_LIBRARY_PATH="$PWD/build/colab-cpu/bin:${LD_LIBRARY_PATH:-}"
+          for bin in audiocpp_cli audiocpp_server audiocpp_gguf; do
+            echo "=== Checking ${bin} ==="
+            ldd "build/colab-cpu/bin/${bin}" | tee "/tmp/${bin}.ldd"
+            if grep -q "not found" "/tmp/${bin}.ldd"; then
+              echo "::error::${bin} has missing runtime dependencies."
+              cat "/tmp/${bin}.ldd"
+              exit 1
+            fi
+            readelf -d "build/colab-cpu/bin/${bin}" | tee "/tmp/${bin}.needed"
+            if grep -E 'Shared library: \[(libstdc\+\+|libgcc_s)\.so' "/tmp/${bin}.needed"; then
+              echo "::error::${bin} directly depends on non-portable C++ runtime libraries."
+              exit 1
+            fi
+          done
+
+      - name: Package Artifacts
+        run: |
+          mkdir -p cpu_dist/models
+          for bin in audiocpp_cli audiocpp_server audiocpp_gguf; do
+            install -m 0755 "audio.cpp/build/colab-cpu/bin/${bin}" "cpu_dist/${bin}"
+          done
+          find audio.cpp/build/colab-cpu/bin -maxdepth 1 -name '*.so*' -exec cp -P {} cpu_dist/ \;
+          install -m 0644 audio.cpp/LICENSE cpu_dist/LICENSE
+          cp -r audio.cpp/tools cpu_dist/tools
+          cp -r audio.cpp/model_specs cpu_dist/model_specs
+          (cd cpu_dist && sha256sum audiocpp_cli audiocpp_server audiocpp_gguf *.so* > SHA256SUMS)
+          tar -czvf audio-cpp-linux-x64-cpu.tar.gz -C cpu_dist .
+          ls -lh audio-cpp-linux-x64-cpu.tar.gz
+
+      - name: Upload Workflow Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: audio-cpp-linux-x64-cpu
+          path: audio-cpp-linux-x64-cpu.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Create or Update Release
+    needs: [build-cuda, build-cpu]
+    if: ${{ always() && (needs.build-cuda.result == 'success' || needs.build-cpu.result == 'success') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Built Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release_assets
+          pattern: 'audio-cpp-*'
+          merge-multiple: true
+
+      - name: Resolve Commit SHA
+        run: |
+          AUDIOCPP_SHA="${{ needs.build-cuda.outputs.sha || needs.build-cpu.outputs.sha }}"
+          echo "AUDIOCPP_SHA=${AUDIOCPP_SHA}" >> "$GITHUB_ENV"
+
       - name: Create or Update Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: audio-cpp-colab-latest
-          name: "audio.cpp Colab T4 CUDA Build (${{ env.AUDIOCPP_SHA }})"
+          name: "audio.cpp Colab / Linux Build (${{ env.AUDIOCPP_SHA }})"
           make_latest: false
-          files: audio-cpp-colab-t4.tar.gz
+          files: release_assets/*.tar.gz
           body: |
-            Automated build of [0xShug0/audio.cpp](https://github.com/0xShug0/audio.cpp) (`${{ env.AUDIOCPP_SHA }}`) for Google Colab free T4 GPU (`sm_75`, Ubuntu 22.04, CUDA 12.8).
+            Automated build of [0xShug0/audio.cpp](https://github.com/0xShug0/audio.cpp) (`${{ env.AUDIOCPP_SHA }}`) on Ubuntu 22.04.
 
             Included binaries: `audiocpp_cli`, `audiocpp_server`, `audiocpp_gguf`.
 
+            - **Colab T4 CUDA 12.8 (`sm_75`)**: `audio-cpp-colab-t4.tar.gz`
+            - **Pure CPU Portable (x64, multi-ISA variants)**: `audio-cpp-linux-x64-cpu.tar.gz`
+
             **How to use in Colab:**
             ```bash
+            # GPU (T4):
             !wget -q https://github.com/${{ github.repository }}/releases/download/audio-cpp-colab-latest/audio-cpp-colab-t4.tar.gz
             !mkdir -p audio-cpp && tar -xzf audio-cpp-colab-t4.tar.gz -C audio-cpp
+            !chmod +x audio-cpp/audiocpp_*
+
+            # Pure CPU:
+            !wget -q https://github.com/${{ github.repository }}/releases/download/audio-cpp-colab-latest/audio-cpp-linux-x64-cpu.tar.gz
+            !mkdir -p audio-cpp && tar -xzf audio-cpp-linux-x64-cpu.tar.gz -C audio-cpp
             !chmod +x audio-cpp/audiocpp_*
             ```
         env:
